@@ -27,6 +27,7 @@ for key, default in [
     ("lang", "ar"),
     ("page", "dashboard"),
     ("last_msg", ("", "")),   # (type, text)  type = success|error|warning
+    ("sig_code", None),
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
@@ -69,6 +70,12 @@ T = {
         "fill_all": "يرجى ملء جميع الحقول.",
         "pay_success": "تم دفع الفاتورة بنجاح!",
         "nav": "التنقل",
+        "open_banking":    "Open Banking | الخدمات المصرفية المفتوحة",
+        "ob_connect_btn": "🏦 ربط الحساب البنكي (Open Banking)",
+        "ob_transactions": "المعاملات الواردة من البنك",
+        "ob_roundup":     "الادخار التلقائي بالذهب (Round-up)",
+        "kyc_note":       "✅ جميع المستخدمين تجاوزوا مرحلة KYC / AML مسبقاً — وفقاً لقوانين الهاكاثون (Sandbox License)",
+        "sig_label":      "🔐 كود التوثيق الرقمي",
     },
     "en": {
         "login": "Login", "register": "Register",
@@ -104,6 +111,12 @@ T = {
         "fill_all": "Please fill in all fields.",
         "pay_success": "Invoice paid successfully!",
         "nav": "Navigation",
+        "open_banking":    "Open Banking",
+        "ob_connect_btn": "🏦 Connect Bank Account (Open Banking)",
+        "ob_transactions": "Transactions from Bank",
+        "ob_roundup":     "Auto Gold Savings (Round-up)",
+        "kyc_note":       "✅ All users have passed KYC / AML checks — per Hackathon Sandbox License",
+        "sig_label":      "🔐 Digital Signature Code",
     }
 }
 
@@ -169,12 +182,13 @@ with st.sidebar:
         st.success(f"👤 {t('welcome')}, **{st.session_state.username}**")
         st.markdown(f"### {t('nav')}")
         pages = {
-            "dashboard": t("dashboard"),
-            "swap":      t("swap"),
-            "invoices":  t("invoices"),
-            "card":      t("card"),
-            "history":   t("history"),
-            "sms":       t("sms"),
+            "dashboard":    t("dashboard"),
+            "swap":         t("swap"),
+            "invoices":     t("invoices"),
+            "card":         t("card"),
+            "history":      t("history"),
+            "sms":          t("sms"),
+            "open_banking": t("open_banking"),
         }
         for pg, label in pages.items():
             if st.button(label, key=f"nav_{pg}", use_container_width=True):
@@ -235,6 +249,7 @@ def page_auth():
 def page_dashboard():
     st.title(f"🌐 {t('dashboard')} — Horizon")
     show_msg()
+    st.info(t("kyc_note"))
 
     wallet_r = api("get", "wallet")
     prices_r = api("get", "prices", public=True)
@@ -291,6 +306,10 @@ def page_swap():
     st.title(f"🔄 {t('swap')}")
     show_msg()
 
+    if st.session_state.sig_code:
+        st.success(f"**{t('sig_label')}:** `{st.session_state.sig_code}`")
+        st.session_state.sig_code = None
+
     assets = ["USD", "GOLD_OZ", "BTC"]
     c1, arrow, c2 = st.columns([2, 0.5, 2])
     with c1:
@@ -307,6 +326,8 @@ def page_swap():
             if amount > 0:
                 r = api("post", "swap", json={"from_asset": from_asset, "to_asset": to_asset, "amount": amount})
                 if r:
+                    data = r.json()
+                    st.session_state.sig_code = data.get("signature_code")
                     st.session_state.last_msg = ("success", t("success") + " ✅")
                     st.rerun()
             else:
@@ -461,6 +482,40 @@ def page_history():
             st.caption("🔒 جميع الرسوم تُخصم من المبلغ المُستَلَم. / All fees deducted from received amount.")
 
 # ─────────────────────────────────────────────
+# OPEN BANKING PAGE
+# ─────────────────────────────────────────────
+def page_open_banking():
+    st.title(f"🏦 {t('open_banking')}")
+    show_msg()
+
+    st.info(
+        "📡 هذه الصفحة تحاكي Open Banking — ربط حسابك البنكي الخارجي لتفعيل الادخار التلقائي بالذهب."
+        if st.session_state.lang == "ar" else
+        "📡 This page simulates Open Banking — link your external bank to activate automatic Gold savings."
+    )
+    st.markdown("---")
+
+    if st.button(t("ob_connect_btn"), use_container_width=True):
+        r = api("post", "open-banking/connect")
+        if r:
+            data = r.json()
+            st.success(data["message"])
+            st.subheader(f"🏦 {data['bank_name']}")
+
+            st.subheader(t("ob_transactions"))
+            df = pd.DataFrame(data["transactions"])
+            df.columns = ["ID", "المتجر / Merchant", "المبلغ (SAR)", "العملة", "التاريخ", "الفئة", "Round-up (SAR)"]
+            st.dataframe(df, use_container_width=True, hide_index=True)
+
+            st.markdown("---")
+            st.subheader(f"🌟 {t('ob_roundup')}")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("إجمالي Round-up (SAR)", f"{data['total_roundup_sar']:.2f} SAR")
+            c2.metric("القيمة بالدولار (USD)", f"${data['total_roundup_usd']:.4f}")
+            c3.metric("الذهب المُوفَّر (oz)", f"{data['gold_saved_oz']:.8f} oz")
+            st.info(f"💰 رصيد الذهب الجديد: `{data['new_gold_balance']:.8f} oz`")
+
+# ─────────────────────────────────────────────
 # SMS PAGE
 # ─────────────────────────────────────────────
 def page_sms():
@@ -487,11 +542,12 @@ if not st.session_state.token:
     page_auth()
 else:
     page_map = {
-        "dashboard": page_dashboard,
-        "swap":      page_swap,
-        "invoices":  page_invoices,
-        "card":      page_card,
-        "history":   page_history,
-        "sms":       page_sms,
+        "dashboard":    page_dashboard,
+        "swap":         page_swap,
+        "invoices":     page_invoices,
+        "card":         page_card,
+        "history":      page_history,
+        "sms":          page_sms,
+        "open_banking": page_open_banking,
     }
     page_map.get(st.session_state.page, page_dashboard)()
