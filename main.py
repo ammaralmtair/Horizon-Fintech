@@ -11,8 +11,6 @@ import random
 import uuid
 from typing import Optional, Dict, List
 
-import numpy as np
-import yfinance as yf
 from fastapi import FastAPI, HTTPException, Header, Depends
 from pydantic import BaseModel
 
@@ -106,26 +104,21 @@ init_db()
 # ─────────────────────────────────────────────
 FEE_PERCENTAGE = 0.001  # 0.1% per transaction
 
+# ── Fixed Hackathon Rates (Sandbox 2026) ──────────────────────
+HACKATHON_RATES = {
+    "USD_GOLD_OZ": 2000.0,    # 1 USD = 0.0005 oz  →  1 oz = $2,000
+    "USD_BTC":     66666.67,  # 1 USD = 0.000015 BTC → 1 BTC ≈ $66,667
+    "USD_SAR":     3.75,      # 1 USD = 3.75 SAR
+}
+
 price_history: Dict[str, List[float]] = {
-    "GOLD_OZ": [2300 + random.uniform(-20, 20) for _ in range(10)],
-    "BTC":     [65000 + random.uniform(-500, 500) for _ in range(10)]
+    "GOLD_OZ": [2000.0] * 10,
+    "BTC":     [66666.67] * 10
 }
 
 def get_live_prices() -> Dict[str, float]:
-    """Fetch live prices via yfinance; fallback to random-walk simulation."""
-    try:
-        gold_price = float(yf.Ticker("GC=F").history(period="1d")["Close"].iloc[-1])
-        btc_price  = float(yf.Ticker("BTC-USD").history(period="1d")["Close"].iloc[-1])
-    except Exception:
-        gold_price = price_history["GOLD_OZ"][-1] + float(np.random.normal(0, 5))
-        btc_price  = price_history["BTC"][-1]     + float(np.random.normal(0, 200))
-
-    price_history["GOLD_OZ"].append(gold_price)
-    price_history["BTC"].append(btc_price)
-    if len(price_history["GOLD_OZ"]) > 20: price_history["GOLD_OZ"].pop(0)
-    if len(price_history["BTC"])     > 20: price_history["BTC"].pop(0)
-
-    return {"USD_GOLD_OZ": gold_price, "USD_BTC": btc_price}
+    """Return fixed hackathon sandbox rates. No external API needed."""
+    return {"USD_GOLD_OZ": HACKATHON_RATES["USD_GOLD_OZ"], "USD_BTC": HACKATHON_RATES["USD_BTC"]}
 
 # ─────────────────────────────────────────────
 # AUTH HELPERS
@@ -160,6 +153,12 @@ def save_wallet(user_id: int, balances: Dict[str, float], conn: sqlite3.Connecti
         "UPDATE wallets SET usd = ?, gold_oz = ?, btc = ? WHERE user_id = ?",
         (balances["USD"], balances["GOLD_OZ"], balances["BTC"], user_id)
     )
+
+def generate_digital_signature(data: str) -> str:
+    """Simulate a digital signature for transaction verification (SHA-256 simulation)."""
+    timestamp = datetime.datetime.now().isoformat()
+    payload   = f"{data}|{timestamp}|HORIZON_SANDBOX_KEY_2026"
+    return "SIG-" + hashlib.sha256(payload.encode()).hexdigest()[:16].upper()
 
 # ─────────────────────────────────────────────
 # PYDANTIC MODELS
@@ -324,7 +323,9 @@ async def swap_assets(request: SwapRequest, user_id: int = Depends(get_current_u
     )
     conn.commit()
     conn.close()
-    return {"balances": balances}
+    sig_data       = f"{user_id}|{from_asset}|{to_asset}|{round(amount,6)}|{round(net_amount,6)}"
+    signature_code = generate_digital_signature(sig_data)
+    return {"balances": balances, "signature_code": signature_code}
 
 # ─────────────────────────────────────────────
 # SMS SIMULATION
@@ -384,6 +385,59 @@ async def get_financial_advice(user_id: int = Depends(get_current_user)):
             "priority": "Low"
         }
     return {"advice": "محفظتك متوازنة بشكل جيد. استمر على هذا النهج!", "priority": "Low"}
+
+# ─────────────────────────────────────────────
+# OPEN BANKING  (Track 2 — محاكاة الخدمات المصرفية المفتوحة)
+# ─────────────────────────────────────────────
+MOCK_BANK_TRANSACTIONS = [
+    {"id": "TXN001", "merchant": "Carrefour KSA",  "amount": 47.30,  "currency": "SAR", "date": "2026-04-25", "category": "Groceries"},
+    {"id": "TXN002", "merchant": "Amazon.sa",       "amount": 120.75, "currency": "SAR", "date": "2026-04-24", "category": "Shopping"},
+    {"id": "TXN003", "merchant": "STC Pay",         "amount": 85.00,  "currency": "SAR", "date": "2026-04-23", "category": "Telecom"},
+    {"id": "TXN004", "merchant": "Jarir Bookstore", "amount": 215.50, "currency": "SAR", "date": "2026-04-22", "category": "Education"},
+    {"id": "TXN005", "merchant": "McDonald's",      "amount": 38.90,  "currency": "SAR", "date": "2026-04-21", "category": "Food & Dining"},
+]
+
+@app.post("/open-banking/connect", summary="Simulate Open Banking: Pull Transactions & Auto Round-up to Gold")
+async def open_banking_connect(user_id: int = Depends(get_current_user)):
+    """محاكاة Open Banking API — سحب معاملات خارجية وتفعيل Round-up بالذهب تلقائياً."""
+    RATES             = get_live_prices()
+    sar_to_usd        = 1.0 / HACKATHON_RATES["USD_SAR"]
+    total_roundup_sar = 0.0
+    enriched_txns     = []
+
+    for txn in MOCK_BANK_TRANSACTIONS:
+        roundup = round(math.ceil(txn["amount"]) - txn["amount"], 2)
+        total_roundup_sar += roundup
+        enriched_txns.append({**txn, "roundup_sar": roundup})
+
+    total_roundup_usd = total_roundup_sar * sar_to_usd
+    gold_saved        = total_roundup_usd / RATES["USD_GOLD_OZ"]
+
+    conn     = get_db()
+    balances = load_wallet(user_id, conn)
+    balances["GOLD_OZ"] += gold_saved
+    save_wallet(user_id, balances, conn)
+
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn.execute(
+        """INSERT INTO transactions (user_id, timestamp, from_asset, to_asset, amount, converted_amount, fee, status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (user_id, now, "SAR_ROUNDUP", "GOLD_OZ",
+         round(total_roundup_sar, 4), round(gold_saved, 8), 0.0,
+         "✅ Open Banking Round-up")
+    )
+    conn.commit()
+    conn.close()
+
+    return {
+        "bank_name":         "Al Rajhi Bank (محاكاة / Simulated)",
+        "transactions":      enriched_txns,
+        "total_roundup_sar": round(total_roundup_sar, 2),
+        "total_roundup_usd": round(total_roundup_usd, 6),
+        "gold_saved_oz":     round(gold_saved, 8),
+        "new_gold_balance":  round(balances["GOLD_OZ"], 8),
+        "message":           f"تم ربط حسابك بنجاح! وفّرت {gold_saved:.8f} أونصة ذهب عبر نظام Round-up التلقائي."
+    }
 
 # ─────────────────────────────────────────────
 # TRANSACTION HISTORY
